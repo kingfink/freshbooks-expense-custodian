@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  lint:
+    name: Check formatting and linting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -19,11 +20,21 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+
+  test:
+    name: Run pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
       - run: uv run pytest
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.MODAL_DEPLOY_ENABLED == 'true'
-    needs: test
+    needs: [lint, test]
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}

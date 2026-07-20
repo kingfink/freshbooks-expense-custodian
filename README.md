@@ -94,7 +94,9 @@ uv run ruff format --check .
 
 ## Continuous deployment
 
-GitHub Actions runs lint and tests for pull requests and pushes to `master`. A successful push to `master` also deploys to Modal only after all three repository settings exist:
+GitHub Actions runs two checks for pull requests and pushes to `master`: `Check formatting and linting` and `Run pytest`. The default-branch ruleset should require both checks after they have appeared in the repository once.
+
+A successful push to `master` also deploys to Modal only after all three repository settings exist:
 
 - Actions secrets `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
 - Actions variable `MODAL_DEPLOY_ENABLED` set to `true`.
