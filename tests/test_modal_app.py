@@ -216,8 +216,10 @@ def test_unknown_category_id_logs_a_null_name(capsys: pytest.CaptureFixture[str]
 
 def test_list_categories_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FRESHBOOKS_ACCOUNT_ID", "account")
+    paths: list[str] = []
 
     def fake_request(method: str, path: str, body: object = None) -> dict[str, Any]:
+        paths.append(path)
         page = 2 if "page=2" in path else 1
         return {
             "response": {
@@ -231,6 +233,7 @@ def test_list_categories_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(modal_app, "request", fake_request)
 
     assert modal_app.list_categories() == {1: "Category 1", 2: "Category 2"}
+    assert paths[0] == "/accounting/account/account/expenses/categories?page=1&per_page=100"
 
 
 def test_list_expenses_paginates(monkeypatch: pytest.MonkeyPatch) -> None:

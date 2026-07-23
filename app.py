@@ -292,7 +292,7 @@ def list_categories() -> dict[int, str]:
     while True:
         result = request(
             "GET",
-            f"/accounting/account/{account}/expenses/categories/categories?page={page}&per_page=100",
+            f"/accounting/account/{account}/expenses/categories?page={page}&per_page=100",
         )["response"]["result"]
         for category in result.get("categories", []):
             if category.get("categoryid") is not None:
