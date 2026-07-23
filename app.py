@@ -88,8 +88,10 @@ def process_expenses(
     decide: Callable[[str, list[str]], VendorDecision],
     update: Callable[[int, dict[str, Any]], dict[str, Any]],
     *,
+    categories: dict[int, str] | None = None,
     dry_run: bool = True,
 ) -> dict[str, int]:
+    categories = categories or {}
     summary = Counter(pulled=len(expenses), candidates=len(candidate_ids))
     history = vendor_history(expenses, trusted_ids)
     vendors = sorted(history)
@@ -112,10 +114,10 @@ def process_expenses(
         )
         context = {
             "expense_id": expense_id,
-            "before": {
-                "vendor": expense.get("vendor"),
-                "categoryid": expense.get("categoryid"),
-            },
+            "before": _label_category(
+                {"vendor": expense.get("vendor"), "categoryid": expense.get("categoryid")},
+                categories,
+            ),
         }
         if not descriptor or not vendors:
             outcome = _abstain("no_descriptor_or_history", context, dry_run)
@@ -130,7 +132,7 @@ def process_expenses(
                 outcome = "retry"
             else:
                 outcome = _apply_decision(
-                    expense, decision, vendors, history, update, context, dry_run
+                    expense, decision, vendors, history, update, context, categories, dry_run
                 )
 
         summary[outcome] += 1
@@ -148,6 +150,7 @@ def _apply_decision(
     history: dict[str, int],
     update: Callable[[int, dict[str, Any]], dict[str, Any]],
     context: dict[str, Any],
+    categories: dict[int, str],
     dry_run: bool,
 ) -> str:
     context["vendor"] = decision.vendor
@@ -160,7 +163,17 @@ def _apply_decision(
         fields["vendor"] = decision.vendor
     if category_id != expense.get("categoryid"):
         fields["categoryid"] = category_id
-    context.update(categoryid=category_id, after={**context["before"], **fields})
+    context.update(
+        categoryid=category_id,
+        category=_category_name(categories, category_id),
+        after=_label_category(
+            {
+                "vendor": fields.get("vendor", expense.get("vendor")),
+                "categoryid": fields.get("categoryid", expense.get("categoryid")),
+            },
+            categories,
+        ),
+    )
 
     if dry_run:
         log("routing_dry_run", **context)
@@ -173,10 +186,10 @@ def _apply_decision(
     except Exception as error:
         log("routing_retry", **context, error=type(error).__name__)
         return "retry"
-    context["after"] = {
-        "vendor": updated.get("vendor"),
-        "categoryid": updated.get("categoryid"),
-    }
+    context["after"] = _label_category(
+        {"vendor": updated.get("vendor"), "categoryid": updated.get("categoryid")},
+        categories,
+    )
     log("routing_applied", **context)
     return "applied"
 
@@ -184,6 +197,21 @@ def _apply_decision(
 def _abstain(reason: str, context: dict[str, Any], dry_run: bool) -> str:
     log("routing_abstained", **context, reason=reason)
     return "dry_run" if dry_run else "abstained"
+
+
+def _category_name(categories: dict[int, str], category_id: Any) -> str | None:
+    if category_id is None:
+        return None
+    return categories.get(int(category_id))
+
+
+def _label_category(fields: dict[str, Any], categories: dict[int, str]) -> dict[str, Any]:
+    labeled: dict[str, Any] = {}
+    for key, value in fields.items():
+        labeled[key] = value
+        if key == "categoryid":
+            labeled["category"] = _category_name(categories, value)
+    return labeled
 
 
 def _is_bank_import(expense: dict[str, Any]) -> bool:
@@ -257,6 +285,23 @@ def list_expenses() -> list[dict[str, Any]]:
         page += 1
 
 
+def list_categories() -> dict[int, str]:
+    account = os.environ["FRESHBOOKS_ACCOUNT_ID"]
+    categories: dict[int, str] = {}
+    page = 1
+    while True:
+        result = request(
+            "GET",
+            f"/accounting/account/{account}/expenses/categories/categories?page={page}&per_page=100",
+        )["response"]["result"]
+        for category in result.get("categories", []):
+            if category.get("categoryid") is not None:
+                categories[int(category["categoryid"])] = str(category.get("category") or "")
+        if page >= int(result.get("pages", 1)):
+            return categories
+        page += 1
+
+
 def business_uuid() -> str:
     account_id = os.environ["FRESHBOOKS_ACCOUNT_ID"]
     memberships = request("GET", "/auth/api/v1/users/me")["response"]["business_memberships"]
@@ -320,6 +365,7 @@ def run_once() -> dict[str, int]:
     unmatched_ids = petty_cash_expense_ids(business_uuid(), currency_code)
     candidate_ids = bank_ids & unmatched_ids
     trusted_ids = bank_ids - unmatched_ids
+    categories = list_categories()
     agent = Agent(
         os.getenv("OPENAI_MODEL", "openai-responses:gpt-5-mini"),
         output_type=VendorDecision,
@@ -336,6 +382,7 @@ def run_once() -> dict[str, int]:
         trusted_ids,
         decide,
         update_expense,
+        categories=categories,
         dry_run=DRY_RUN,
     )
     summary.update(bank_expenses=len(bank_ids), training_expenses=len(trusted_ids))
