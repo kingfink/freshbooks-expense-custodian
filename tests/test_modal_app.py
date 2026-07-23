@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -166,6 +167,70 @@ def test_most_recent_reconciled_expense_sets_the_category() -> None:
     )
 
     assert updates == [{"vendor": "Acme Co", "categoryid": 10}]
+
+
+def test_routing_log_includes_category_names(capsys: pytest.CaptureFixture[str]) -> None:
+    expenses = [history(1, 101), imported(4)]
+
+    process_expenses(
+        expenses,
+        {4},
+        {1},
+        accept_top,
+        lambda _, fields: {"vendor": fields["vendor"], "categoryid": fields["categoryid"]},
+        categories={10: "Meals", 999: "Uncategorized"},
+        dry_run=False,
+    )
+
+    applied = next(
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if json.loads(line)["event"] == "routing_applied"
+    )
+    assert applied["before"] == {"vendor": None, "categoryid": 999, "category": "Uncategorized"}
+    assert applied["category"] == "Meals"
+    assert applied["after"] == {"vendor": "Acme Co", "categoryid": 10, "category": "Meals"}
+
+
+def test_unknown_category_id_logs_a_null_name(capsys: pytest.CaptureFixture[str]) -> None:
+    expenses = [history(1, 101), imported(4)]
+
+    process_expenses(
+        expenses,
+        {4},
+        {1},
+        accept_top,
+        lambda _, fields: {"vendor": fields["vendor"], "categoryid": fields["categoryid"]},
+        categories={},
+        dry_run=False,
+    )
+
+    applied = next(
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if json.loads(line)["event"] == "routing_applied"
+    )
+    assert applied["category"] is None
+    assert applied["after"]["category"] is None
+
+
+def test_list_categories_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FRESHBOOKS_ACCOUNT_ID", "account")
+
+    def fake_request(method: str, path: str, body: object = None) -> dict[str, Any]:
+        page = 2 if "page=2" in path else 1
+        return {
+            "response": {
+                "result": {
+                    "pages": 2,
+                    "categories": [{"categoryid": page, "category": f"Category {page}"}],
+                }
+            }
+        }
+
+    monkeypatch.setattr(modal_app, "request", fake_request)
+
+    assert modal_app.list_categories() == {1: "Category 1", 2: "Category 2"}
 
 
 def test_list_expenses_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
