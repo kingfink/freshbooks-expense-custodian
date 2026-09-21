@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import unicodedata
 from collections import Counter
 from collections.abc import Callable
@@ -19,6 +20,8 @@ from pydantic_ai import Agent
 APP_NAME = "freshbooks-expense-custodian"
 API_ROOT = "https://api.freshbooks.com"
 HEALTHCHECK_ATTEMPTS = 3
+API_ATTEMPTS = 3
+API_RETRY_BASE_SECONDS = 2
 DRY_RUN = False
 
 app = modal.App(APP_NAME)
@@ -262,10 +265,26 @@ def request(method: str, path: str, body: dict[str, Any] | None = None) -> dict[
             timeout=30,
         )
 
-    response = send()
-    if response.status_code == 401:
-        _refresh_tokens()
+    def send_authorized() -> httpx.Response:
         response = send()
+        if response.status_code == 401:
+            _refresh_tokens()
+            response = send()
+        return response
+
+    for attempt in range(1, API_ATTEMPTS + 1):
+        try:
+            response = send_authorized()
+            if response.status_code < 500 or attempt == API_ATTEMPTS:
+                break
+            error = f"HTTP {response.status_code}"
+        except httpx.TransportError as caught:
+            if attempt == API_ATTEMPTS:
+                raise
+            error = type(caught).__name__
+        delay = API_RETRY_BASE_SECONDS * 2 ** (attempt - 1)
+        log("api_retry", method=method, path=path, attempt=attempt, error=error, delay=delay)
+        time.sleep(delay)
     response.raise_for_status()
     return response.json()
 
