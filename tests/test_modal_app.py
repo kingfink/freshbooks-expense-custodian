@@ -332,6 +332,63 @@ def test_request_refreshes_and_persists_rotated_tokens(
     ]
 
 
+def _api_response(status: int, payload: dict[str, Any] | None = None) -> httpx.Response:
+    return httpx.Response(status, json=payload or {}, request=httpx.Request("GET", "https://x"))
+
+
+def test_request_retries_server_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FRESHBOOKS_ACCESS_TOKEN", "access")
+    outcomes: list[Any] = [
+        _api_response(500),
+        httpx.ConnectError("reset"),
+        _api_response(200, {"ok": True}),
+    ]
+    sleeps: list[float] = []
+
+    def fake_request(*args: Any, **kwargs: Any) -> httpx.Response:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(httpx, "request", fake_request)
+    monkeypatch.setattr(modal_app.time, "sleep", sleeps.append)
+
+    assert modal_app.request("GET", "/test") == {"ok": True}
+    assert sleeps == [2, 4]
+
+
+def test_request_gives_up_after_repeated_server_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FRESHBOOKS_ACCESS_TOKEN", "access")
+    calls: list[int] = []
+
+    def fake_request(*args: Any, **kwargs: Any) -> httpx.Response:
+        calls.append(1)
+        return _api_response(503)
+
+    monkeypatch.setattr(httpx, "request", fake_request)
+    monkeypatch.setattr(modal_app.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        modal_app.request("GET", "/test")
+    assert len(calls) == modal_app.API_ATTEMPTS
+
+
+def test_request_does_not_retry_client_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FRESHBOOKS_ACCESS_TOKEN", "access")
+    calls: list[int] = []
+
+    def fake_request(*args: Any, **kwargs: Any) -> httpx.Response:
+        calls.append(1)
+        return _api_response(404)
+
+    monkeypatch.setattr(httpx, "request", fake_request)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        modal_app.request("GET", "/test")
+    assert len(calls) == 1
+
+
 def test_scheduled_run_reports_start_and_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEALTHCHECKS_PING_URL", "https://hc-ping.com/check-id")
     events: list[tuple[str, str]] = []
