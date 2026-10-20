@@ -448,15 +448,7 @@ def test_healthcheck_outage_does_not_fail_the_job(
 
 
 @pytest.mark.parametrize("confidence, vendor", [(0.89, None), (0.9, "Acme Co"), (0.96, "Acme Co")])
-def test_vendor_confidence_gates_selection(
-    monkeypatch: pytest.MonkeyPatch,
-    confidence: float,
-    vendor: str | None,
-) -> None:
-    monkeypatch.setattr(modal_app, "list_expenses", lambda: [history(1, 101), imported(4)])
-    monkeypatch.setattr(modal_app, "business_uuid", lambda: "business")
-    monkeypatch.setattr(modal_app, "petty_cash_expense_ids", lambda *_: {4})
-    monkeypatch.setattr(modal_app, "list_categories", lambda: {})
+def test_vendor_confidence_gates_selection(confidence: float, vendor: str | None) -> None:
     result = SimpleNamespace(
         output=SimpleNamespace(vendor=SimpleNamespace(value="Acme Co")),
         response=SimpleNamespace(
@@ -468,19 +460,7 @@ def test_vendor_confidence_gates_selection(
         ),
         usage=SimpleNamespace(input_tokens=100, output_tokens=20),
     )
-    monkeypatch.setattr(
-        modal_app,
-        "Agent",
-        lambda *args, **kwargs: SimpleNamespace(run_sync=lambda *args, **kwargs: result),
-    )
-
-    def check_decision(
-        expenses: Any, candidates: Any, trusted: Any, decide: Any, *args: Any, **kwargs: Any
-    ) -> dict:
-        decision = decide("ACME CO", ["Acme Co"])
-        assert decision.vendor == vendor
-        assert decision.confidence == confidence
-        return {}
-
-    monkeypatch.setattr(modal_app, "process_expenses", check_decision)
-    modal_app.run_once()
+    agent = SimpleNamespace(run_sync=lambda *args, **kwargs: result)
+    decision = modal_app.select_vendor(agent, "ACME CO", ["Acme Co"])
+    assert decision.vendor == vendor
+    assert decision.confidence == confidence
