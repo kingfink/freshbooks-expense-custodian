@@ -1,0 +1,64 @@
+{
+  "replay": {
+    "log_records": 62,
+    "logged_expenses": 60,
+    "eligible_before_limit": 58,
+    "skipped": {
+      "not_reconciled_or_ineligible": 2
+    },
+    "distinct_descriptors": 10,
+    "lag_days": 7,
+    "logged_decisions_vs_final_labels": {
+      "correct": 57,
+      "vendor_and_category_correct": 57,
+      "abstained": 1
+    }
+  },
+  "since": "1970-01-01",
+  "limit": 100,
+  "min_confidence": 0.9,
+  "vendor_count": 34,
+  "results": {
+    "jev": {
+      "in_list": 57,
+      "vendor_and_category_correct": 57,
+      "estimated_cost_usd": 0.0022096619999999994,
+      "input_tokens": 52611,
+      "output_tokens": 20698,
+      "correct": 57,
+      "familiar_correct": 57,
+      "seconds": 4.976391467000025,
+      "out_of_list": 1,
+      "appropriate_abstention": 1,
+      "abstained": 1,
+      "unseen_abstained": 1,
+      "rows": 58,
+      "coverage": 0.9827586206896551,
+      "assignment_accuracy": 1.0,
+      "mean_seconds": 0.08579985287931077,
+      "pricing_checked": "2026-10-20"
+    },
+    "openai": {
+      "in_list": 57,
+      "vendor_and_category_correct": 57,
+      "estimated_cost_usd": 0.04444925000000001,
+      "input_tokens": 13413,
+      "output_tokens": 20548,
+      "cache_read_tokens": 0,
+      "correct": 57,
+      "familiar_correct": 57,
+      "seconds": 256.86263605399984,
+      "out_of_list": 1,
+      "appropriate_abstention": 1,
+      "abstained": 1,
+      "unseen_abstained": 1,
+      "rows": 58,
+      "coverage": 0.9827586206896551,
+      "assignment_accuracy": 1.0,
+      "mean_seconds": 4.4286661388620665,
+      "pricing_checked": "2026-10-20"
+    }
+  },
+  "vendor_count_note": "All 58 per-expense reconstructed candidate lists contained 34 vendors; remote summary originally emitted 0 for the unused shared list.",
+  "run_url": "https://modal.com/apps/finkel-data-and-analytics/main/ap-RajFYdoXZbQ138cvz11cSQ"
+}

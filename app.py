@@ -14,8 +14,8 @@ from urllib.parse import urlencode
 
 import httpx
 import modal
-from pydantic import BaseModel
-from pydantic_ai import Agent
+
+from jev import JevSelector, VendorDecision
 
 APP_NAME = "freshbooks-expense-custodian"
 API_ROOT = "https://api.freshbooks.com"
@@ -26,16 +26,16 @@ DRY_RUN = False
 
 app = modal.App(APP_NAME)
 freshbooks_secret = modal.Secret.from_name("freshbooks-secret")
-openai_secret = modal.Secret.from_name("openai-secret")
+typesafe_secret = modal.Secret.from_name("typesafe-secret", required_keys=["TYPESAFE_API_KEY"])
 healthchecks_secret = modal.Secret.from_name(
     "freshbooks-expense-custodian-healthchecks",
     required_keys=["HEALTHCHECKS_PING_URL"],
 )
-image = modal.Image.debian_slim(python_version="3.12").pip_install("pydantic-ai-slim[openai]>=1,<2")
-
-
-class VendorDecision(BaseModel):
-    vendor: str | None
+image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("httpx>=0.27,<1", "pydantic>=2,<3")
+    .add_local_python_source("jev")
+)
 
 
 def log(event: str, **values: Any) -> None:
@@ -157,6 +157,9 @@ def _apply_decision(
     dry_run: bool,
 ) -> str:
     context["vendor"] = decision.vendor
+    for field in ("model", "confidence", "probability", "usage"):
+        if hasattr(decision, field):
+            context[field] = getattr(decision, field)
     if decision.vendor not in vendors:
         return _abstain("vendor_not_selected", context, dry_run)
 
@@ -385,25 +388,16 @@ def run_once() -> dict[str, int]:
     candidate_ids = bank_ids & unmatched_ids
     trusted_ids = bank_ids - unmatched_ids
     categories = list_categories()
-    agent = Agent(
-        os.getenv("OPENAI_MODEL", "openai-responses:gpt-5-mini"),
-        output_type=VendorDecision,
-        instructions="Choose an exact supplied vendor or null. Never invent a vendor or category.",
-    )
-
-    def decide(descriptor: str, vendors: list[str]) -> VendorDecision:
-        prompt = json.dumps({"descriptor": descriptor, "vendors": vendors})
-        return agent.run_sync(prompt).output
-
-    summary = process_expenses(
-        expenses,
-        candidate_ids,
-        trusted_ids,
-        decide,
-        update_expense,
-        categories=categories,
-        dry_run=DRY_RUN,
-    )
+    with httpx.Client() as client:
+        summary = process_expenses(
+            expenses,
+            candidate_ids,
+            trusted_ids,
+            JevSelector(client),
+            update_expense,
+            categories=categories,
+            dry_run=DRY_RUN,
+        )
     summary.update(bank_expenses=len(bank_ids), training_expenses=len(trusted_ids))
     log("run_completed", **summary)
     return summary
@@ -411,7 +405,7 @@ def run_once() -> dict[str, int]:
 
 @app.function(
     image=image,
-    secrets=[freshbooks_secret, openai_secret, healthchecks_secret],
+    secrets=[freshbooks_secret, typesafe_secret, healthchecks_secret],
     schedule=modal.Cron("0 3 * * *", timezone="America/New_York"),
     max_containers=1,
 )
