@@ -444,3 +444,80 @@ def test_healthcheck_outage_does_not_fail_the_job(
     modal_app.ping_healthcheck("https://hc-ping.com/check-id")
 
     assert attempts == modal_app.HEALTHCHECK_ATTEMPTS
+
+
+@pytest.mark.parametrize("confidence, expected", [(0.96, "applied"), (0.5, "abstained")])
+def test_run_once_uses_jev_and_preserves_category_and_confidence_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    confidence: float,
+    expected: str,
+) -> None:
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-only")
+    monkeypatch.setattr(modal_app, "list_expenses", lambda: [history(1, 101), imported(4)])
+    monkeypatch.setattr(modal_app, "business_uuid", lambda: "business")
+    monkeypatch.setattr(modal_app, "petty_cash_expense_ids", lambda *_: {4})
+    monkeypatch.setattr(modal_app, "list_categories", lambda: {10: "Software"})
+    updates = []
+    monkeypatch.setattr(
+        modal_app,
+        "update_expense",
+        lambda expense_id, fields: updates.append((expense_id, fields)) or fields,
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://api.typesafe.ai/v1/systemone"
+        payload = json.loads(request.content)
+        assert payload["model"] == "jev-1.13.0"
+        assert payload["questions"]["vendor"]["criteria"]["vendor_0"] == "Acme Co"
+        return httpx.Response(
+            200,
+            json={
+                "model": "jev-1.13.0",
+                "answers": {
+                    "vendor": {
+                        "choice": "vendor_0",
+                        "confidence": confidence,
+                        "probabilities": {"vendor_0": 0.98, "none": 0.02},
+                    }
+                },
+                "usage": {"input_tokens": 100, "output_tokens": 20},
+            },
+        )
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda: real_client(transport=httpx.MockTransport(respond))
+    )
+    summary = modal_app.run_once()
+    assert summary[expected] == 1
+    assert updates == (
+        [(4, {"vendor": "Acme Co", "categoryid": 10})] if expected == "applied" else []
+    )
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    routing = next(line for line in logs if line["event"] == f"routing_{expected}")
+    assert routing["model"] == "jev-1.13.0"
+    assert routing["confidence"] == confidence
+    assert routing["usage"] == {"input_tokens": 100, "output_tokens": 20}
+    assert "SQ * ACME" not in json.dumps(logs)
+
+
+def test_run_once_jev_outage_does_not_update_expenses(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-only")
+    monkeypatch.setattr(modal_app, "list_expenses", lambda: [history(1, 101), imported(4)])
+    monkeypatch.setattr(modal_app, "business_uuid", lambda: "business")
+    monkeypatch.setattr(modal_app, "petty_cash_expense_ids", lambda *_: {4})
+    monkeypatch.setattr(modal_app, "list_categories", lambda: {})
+
+    def no_write(*args: Any) -> None:
+        pytest.fail("An API failure must not update an expense")
+
+    monkeypatch.setattr(modal_app, "update_expense", no_write)
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda: real_client(transport=httpx.MockTransport(lambda _: httpx.Response(503))),
+    )
+    with pytest.raises(RuntimeError, match="1 expense operations need retrying"):
+        modal_app.run_once()

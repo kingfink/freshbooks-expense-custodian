@@ -13,18 +13,18 @@ At 3 AM America/New_York it:
 1. Fetches expenses and the Petty Cash General Ledger.
 2. Treats bank-created expenses still in Petty Cash as unmatched.
 3. Finds each vendor's most recently used category in matched bank-created expenses.
-4. Asks PydanticAI to select an exact known vendor or abstain.
+4. Asks pinned Jev 1.13.0 to select an exact known vendor or abstain, requiring confidence of at least 0.9.
 5. Applies the vendor and its most recently used category, then emits JSON logs to stdout.
 
 There is no database or watermark. Once an expense is matched, FreshBooks moves it out of Petty Cash and it naturally leaves the candidate set. Repeated runs are idempotent, and Modal forwards stdout through its configured logging integration.
 
-The expense descriptor is sent to OpenAI for vendor selection. Logs contain only a truncated descriptor hash, never the raw text.
+The expense descriptor and known vendor names are sent to TypeSafe for vendor selection. Logs contain only a truncated descriptor hash, never the raw text.
 
 ## Setup
 
 Select the Modal workspace that should own the deployment. The function injects three named secrets:
 
-- `openai-secret`, containing `OPENAI_API_KEY`.
+- `typesafe-secret`, containing `TYPESAFE_API_KEY`.
 - `freshbooks-secret`, containing:
 
 ```text
@@ -64,7 +64,7 @@ uv run modal deploy app.py
 uv run modal run app.py
 ```
 
-Set `DRY_RUN = True` in `app.py` when validating a routing change. FreshBooks token rotation is persisted back to `freshbooks-secret` automatically.
+Set `DRY_RUN = True` in `app.py` when validating a routing change. Jev returns only supplied vendors or abstains; responses below 0.9 confidence leave expenses untouched. API failures and malformed responses trigger the existing failed-run healthcheck path without falling back to OpenAI. Routing logs include the returned model, confidence, selected probability, and token usage. FreshBooks token rotation is persisted back to `freshbooks-secret` automatically.
 
 ## Monitoring
 
