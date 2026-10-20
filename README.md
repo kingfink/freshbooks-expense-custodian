@@ -13,7 +13,7 @@ At 3 AM America/New_York it:
 1. Fetches expenses and the Petty Cash General Ledger.
 2. Treats bank-created expenses still in Petty Cash as unmatched.
 3. Finds each vendor's most recently used category in matched bank-created expenses.
-4. Asks pinned Jev 1.13.0 to select an exact known vendor or abstain, requiring confidence of at least 0.9.
+4. Asks pinned Jev 1.13.0 through PydanticAI’s native TypeSafe integration to select an exact known vendor or abstain, requiring confidence of at least 0.9.
 5. Applies the vendor and its most recently used category, then emits JSON logs to stdout.
 
 There is no database or watermark. Once an expense is matched, FreshBooks moves it out of Petty Cash and it naturally leaves the candidate set. Repeated runs are idempotent, and Modal forwards stdout through its configured logging integration.
