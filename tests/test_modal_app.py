@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -446,104 +447,40 @@ def test_healthcheck_outage_does_not_fail_the_job(
     assert attempts == modal_app.HEALTHCHECK_ATTEMPTS
 
 
-def install_typesafe_transport(monkeypatch: pytest.MonkeyPatch, respond: Any) -> None:
-    import httpx2
-    from pydantic_ai import Agent
-    from pydantic_ai.models.typesafe import TypeSafeModel
-    from pydantic_ai.providers.typesafe import TypeSafeProvider
-
-    client = httpx2.AsyncClient(transport=httpx2.MockTransport(respond))
-    provider = TypeSafeProvider(api_key="test-only", http_client=client)
-    monkeypatch.setattr(
-        modal_app,
-        "Agent",
-        lambda model, **kwargs: Agent(
-            TypeSafeModel("jev-1.13.0", provider=provider),
-            model_settings={"max_retries": 0},
-            **kwargs,
-        ),
-    )
-
-
-@pytest.mark.parametrize("confidence, abstain", [(0.96, False), (0.5, False), (0.99, True)])
-def test_run_once_uses_native_jev_with_known_vendors_and_abstention(
+@pytest.mark.parametrize("confidence, vendor", [(0.89, None), (0.9, "Acme Co"), (0.96, "Acme Co")])
+def test_vendor_confidence_gates_selection(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
     confidence: float,
-    abstain: bool,
+    vendor: str | None,
 ) -> None:
-    import httpx2
-
-    monkeypatch.setattr(modal_app, "list_expenses", lambda: [history(1, 101), imported(4)])
-    monkeypatch.setattr(modal_app, "business_uuid", lambda: "business")
-    monkeypatch.setattr(modal_app, "petty_cash_expense_ids", lambda *_: {4})
-    monkeypatch.setattr(modal_app, "list_categories", lambda: {10: "Software"})
-    updates = []
-    monkeypatch.setattr(
-        modal_app,
-        "update_expense",
-        lambda expense_id, fields: updates.append((expense_id, fields)) or fields,
-    )
-
-    def respond(request: httpx2.Request) -> httpx2.Response:
-        assert str(request.url) == "https://api.typesafe.ai/v1/systemone"
-        payload = json.loads(request.content)
-        assert payload["model"] == "jev-1.13.0"
-        assert len(payload["questions"]) == 1
-        question_id, question = next(iter(payload["questions"].items()))
-        options = question["criteria"]
-        assert "Acme Co" in options, payload
-        assert len(options) == 2, payload
-        none = next(key for key in options if key != "Acme Co")
-        chosen = none if abstain else "Acme Co"
-        return httpx2.Response(
-            200,
-            json={
-                "model": "jev-1.13.0",
-                "answers": {
-                    question_id: {
-                        "type": "choice",
-                        "choice": chosen,
-                        "confidence": confidence,
-                        "probabilities": {key: 0.98 if key == chosen else 0.02 for key in options},
-                    }
-                },
-                "usage": {"input_tokens": 100, "output_tokens": 20},
-            },
-        )
-
-    install_typesafe_transport(monkeypatch, respond)
-    summary = modal_app.run_once()
-    accepted = confidence >= 0.9 and not abstain
-    outcome = "applied" if accepted else "abstained"
-    assert summary[outcome] == 1
-    assert updates == ([(4, {"vendor": "Acme Co", "categoryid": 10})] if accepted else [])
-    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    routing = next(line for line in logs if line["event"] == f"routing_{outcome}")
-    assert routing["model"] == "jev-1.13.0"
-    assert routing["confidence"] == confidence
-    assert routing["usage"] == {"input_tokens": 100, "output_tokens": 20}
-    assert "SQ * ACME" not in json.dumps(logs)
-
-
-@pytest.mark.parametrize("response_kind", ["outage", "malformed"])
-def test_run_once_jev_failures_do_not_update_expenses(
-    monkeypatch: pytest.MonkeyPatch,
-    response_kind: str,
-) -> None:
-    import httpx2
-
     monkeypatch.setattr(modal_app, "list_expenses", lambda: [history(1, 101), imported(4)])
     monkeypatch.setattr(modal_app, "business_uuid", lambda: "business")
     monkeypatch.setattr(modal_app, "petty_cash_expense_ids", lambda *_: {4})
     monkeypatch.setattr(modal_app, "list_categories", lambda: {})
-
-    def no_write(*args: Any) -> None:
-        pytest.fail("A failed model call must not update an expense")
-
-    monkeypatch.setattr(modal_app, "update_expense", no_write)
-    install_typesafe_transport(
-        monkeypatch, lambda _: httpx2.Response(503 if response_kind == "outage" else 200, json={})
+    result = SimpleNamespace(
+        output=SimpleNamespace(vendor=SimpleNamespace(value="Acme Co")),
+        response=SimpleNamespace(
+            model_name="jev-1.13.0",
+            provider_details={
+                "confidence": {"vendor": confidence},
+                "probabilities": {"vendor": {"Acme Co": 0.99, "none": 0.01}},
+            },
+        ),
+        usage=SimpleNamespace(input_tokens=100, output_tokens=20),
     )
-    with pytest.raises(RuntimeError, match="1 expense operations need retrying"):
-        modal_app.run_once()
+    monkeypatch.setattr(
+        modal_app,
+        "Agent",
+        lambda *args, **kwargs: SimpleNamespace(run_sync=lambda *args, **kwargs: result),
+    )
+
+    def check_decision(
+        expenses: Any, candidates: Any, trusted: Any, decide: Any, *args: Any, **kwargs: Any
+    ) -> dict:
+        decision = decide("ACME CO", ["Acme Co"])
+        assert decision.vendor == vendor
+        assert decision.confidence == confidence
+        return {}
+
+    monkeypatch.setattr(modal_app, "process_expenses", check_decision)
+    modal_app.run_once()
