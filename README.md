@@ -4,22 +4,25 @@ A small, stateless Modal job that fixes unmatched bank-created expenses using re
 
 ## Why this exists
 
-FreshBooks' `Apply to future expenses` option appears to depend on automatic merchant matching, which often fails in this account. This job reuses human-reviewed vendors and categories from reconciled bank expenses to fill that gap.
+FreshBooks has an `Apply to future expenses` option, but in observed use it only seems to work after FreshBooks has automatically matched the bank transaction's descriptor to a merchant. FreshBooks does not document how that matching works, and in the account this was built for, it fails for roughly 50–75% of imported expenses. When it fails, FreshBooks neither fills in the vendor nor reuses the category mapping, so the same expense must be corrected manually again.
 
-Daily at 3 AM `America/New_York`, it:
+This project is a workaround for that missing general-purpose rule. It learns only from bank-created expenses that have already been matched during reconciliation, uses their corrected vendors and categories as history, and applies clear matches to new unmatched expenses. Ambiguous expenses are left untouched for normal review in FreshBooks.
 
-1. Finds unmatched bank expenses in the Petty Cash ledger.
-2. Builds vendor history and each vendor's latest category from reconciled bank expenses.
-3. Uses Jev 1.13.0 through PydanticAI to select a known vendor or abstain.
-4. Applies matches with confidence ≥0.9 and logs the result.
+At 3 AM America/New_York it:
 
-Ambiguous expenses stay untouched. API failures fail the run and trigger monitoring. Once reconciled, expenses leave Petty Cash and the candidate set; no database or watermark is needed.
+1. Fetches expenses and the Petty Cash General Ledger.
+2. Treats bank-created expenses still in Petty Cash as unmatched.
+3. Finds each vendor's most recently used category in matched bank-created expenses.
+4. Uses Jev 1.13.0 through PydanticAI to select a known vendor or abstain, requiring confidence ≥0.9.
+5. Applies the vendor and its most recently used category, then emits JSON logs to stdout.
 
-Descriptors and known vendor names are sent to TypeSafe. JSON logs record before/after values, model confidence, and token usage, with a descriptor hash instead of raw notes. Modal forwards logs through its configured integration.
+There is no database or watermark. Once an expense is matched, FreshBooks moves it out of Petty Cash and it naturally leaves the candidate set. Repeated runs are idempotent, and Modal forwards stdout through its configured logging integration.
+
+The expense descriptor and known vendors are sent to TypeSafe for vendor selection. Logs contain only a truncated descriptor hash, never the raw text.
 
 ## Setup
 
-In the deployment workspace, configure three Modal secrets:
+Select the Modal workspace that should own the deployment. The function injects three named secrets:
 
 - `typesafe-secret`, containing `TYPESAFE_API_KEY`.
 - `freshbooks-secret`, containing:
@@ -46,21 +49,31 @@ user:reports:read
 user:account:read
 ```
 
-Bank imports are identified by `transactionid` and `bank_name`; descriptors come from `notes`, falling back to `vendor`. Set `FRESHBOOKS_PETTY_CASH_ACCOUNT_UUID` to the account-specific Petty Cash system-account UUID.
+The code uses `transactionid` plus `bank_name` as the bank-created marker and `notes`, then `vendor`, as the descriptor. The Petty Cash ledger supplies the unmatched state. `FRESHBOOKS_PETTY_CASH_ACCOUNT_UUID` is the account-specific system-account identifier resolved during setup.
 
-Install, deploy, and run manually:
+Install the locked project environment:
 
 ```bash
-uv sync --frozen
+uv sync
+```
+
+Deploy and run manually:
+
+```bash
 uv run modal deploy app.py
 uv run modal run app.py
 ```
 
-Set `DRY_RUN = True` in `app.py` to log proposed changes without updating expenses. OAuth token refreshes are still persisted to `freshbooks-secret`.
+Set `DRY_RUN = True` in `app.py` when validating a routing change. FreshBooks token rotation is persisted back to `freshbooks-secret` automatically. Routing logs include model, confidence, probability, and token usage.
 
 ## Monitoring
 
-Create a Healthchecks.io cron check: `0 3 * * *`, timezone `America/New_York`, grace time 60 minutes.
+Create a Healthchecks.io check with this schedule:
+
+- Schedule type: Cron
+- Cron expression: `0 3 * * *`
+- Time zone: `America/New_York`
+- Grace time: 60 minutes
 
 Store its ping URL in Modal:
 
@@ -69,7 +82,7 @@ uv run modal secret create freshbooks-expense-custodian-healthchecks \
   HEALTHCHECKS_PING_URL=https://hc-ping.com/<check-uuid>
 ```
 
-Runs ping `/start`, then the base URL on success or `/fail` on exception. Monitoring outages are logged without interrupting expense processing.
+Each scheduled run sends `/start` when it begins, the base URL after it succeeds, and `/fail` if it raises an exception. Healthchecks pings are best-effort: monitoring outages are logged but never fail expense processing.
 
 ## Development
 
@@ -81,6 +94,11 @@ uv run ruff format --check .
 
 ## Continuous deployment
 
-GitHub Actions runs lint, formatting, and tests on PRs and pushes to `master`. Require `Check formatting and linting` and `Run pytest` in the default-branch ruleset.
+GitHub Actions runs two checks for pull requests and pushes to `master`: `Check formatting and linting` and `Run pytest`. The default-branch ruleset should require both checks after they have appeared in the repository once.
 
-Passing pushes to `master` deploy to Modal when Actions secrets `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` are configured and `MODAL_DEPLOY_ENABLED=true` is set as an Actions variable. Otherwise, deployment is skipped.
+A successful push to `master` also deploys to Modal only after all three repository settings exist:
+
+- Actions secrets `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
+- Actions variable `MODAL_DEPLOY_ENABLED` set to `true`.
+
+Until then, the deploy job is skipped, so the workflow can be merged before deployment credentials are configured.
