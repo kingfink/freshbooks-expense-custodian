@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -444,3 +445,22 @@ def test_healthcheck_outage_does_not_fail_the_job(
     modal_app.ping_healthcheck("https://hc-ping.com/check-id")
 
     assert attempts == modal_app.HEALTHCHECK_ATTEMPTS
+
+
+@pytest.mark.parametrize("confidence, vendor", [(0.89, None), (0.9, "Acme Co"), (0.96, "Acme Co")])
+def test_vendor_confidence_gates_selection(confidence: float, vendor: str | None) -> None:
+    result = SimpleNamespace(
+        output=SimpleNamespace(vendor=SimpleNamespace(value="Acme Co")),
+        response=SimpleNamespace(
+            model_name="jev-1.13.0",
+            provider_details={
+                "confidence": {"vendor": confidence},
+                "probabilities": {"vendor": {"Acme Co": 0.99, "none": 0.01}},
+            },
+        ),
+        usage=SimpleNamespace(input_tokens=100, output_tokens=20),
+    )
+    agent = SimpleNamespace(run_sync=lambda *args, **kwargs: result)
+    decision = modal_app.select_vendor(agent, "ACME CO", ["Acme Co"])
+    assert decision.vendor == vendor
+    assert decision.confidence == confidence
